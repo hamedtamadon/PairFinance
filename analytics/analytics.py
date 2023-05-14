@@ -28,7 +28,7 @@ print('Connection to PostgresSQL successful.')
 
 while True:
     try:
-        mysql_engine = create_engine(environ["MYSQL_CS"], pool_pre_ping=True, pool_size=10)
+        mysql_engine = create_engine(environ["MYSQL_CS"], pool_pre_ping=True, pool_size=1000)
         break
     except OperationalError:
         sleep(0.1)
@@ -36,7 +36,8 @@ print('Connection to MySQL successful.')
 
 
 
-# Write the solution here
+#Write the solution here
+#functoins for converting Unix Timestamp to datetime format
 def date_to_timestamp(date_str):
     date_obj =datetime.datetime.strptime(date_str, '%Y-%m-%d')
     timestamp = int(date_obj.timestamp())
@@ -58,9 +59,11 @@ def distance(lat1, lon1, lat2, lon2):
     lon2 = lon2.apply(lambda x: float(x))
     return np.arccos(np.sin(np.radians(lat1)) * np.sin(np.radians(lat2)) + 
                      np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.cos(np.radians(lon2 - lon1))) * 6371
+#aggregate function to calculate and preapare result to insert into Mysql database
 def aggregate_function(data):
     df = pd.DataFrame(data)
     df = df.join(pd.json_normalize(df['location'].map(json.loads).tolist())).drop(['location'], axis=1)
+    #adding some extra column for more tracking and monitoring
     for i, row in df.iterrows():
         df['datetime'] = pd.to_datetime(df['time'], unit='s')
         df['date']  = pd.to_datetime(df['datetime'], format="%m/%d/%Y").dt.floor('D')
@@ -96,7 +99,6 @@ while True:
     except OperationalError:
         sleep(0.1)
   
- #create declarative base
 Base = declarative_base()
 
 # define table
@@ -120,29 +122,34 @@ class Devices(Base):
     time = Column(String)
     
 while True:
+    sleep(3600)  #wait to 
     # Create a session factory
     Session = sessionmaker(bind=psql_engine)
     session_psql = Session()
     max_time = session_psql.query(func.max(Devices.time)).scalar()
+    #first check the last records of data which is inserted by Data Simulator into  devices Tables in postgres Database 
     if (max_time):
         dt_max = datetime.fromtimestamp(int(max_time))
+        #subtract 1 hour to cover whole of the records of each hour
         dt_max_minus_1 = dt_max - timedelta(hours=1) 
         max_hour = dt_max_minus_1.hour
         dt_max_hour_Date = dt_max_minus_1.strftime('%Y-%m-%d')
-        #   check last records in Mysql DB
+        #   check last records which is inserted into in Mysql DB
         query = 'SELECT MAX(date),MAX(hour) FROM devices_results where date = (select max(date) from devices_results)'
         df = pd.read_sql_query(query, mysql_engine)
+        #if below condition is True, it means, it is not the first time to inserting to mysql DB
+        #so take the last results in mysqldb table (device_results) and query the records which is 
+        #greater than last record of mysqldb table (device_results) and should lower than resultin devices table in postgres
         if(df.iloc[0,0]):
             final_time = df.iloc[0,0] + ' ' + df.iloc[0,1]
             currnet_timestamp = datetime_to_timestamp_2(final_time)
             data = session_psql.query(Devices.device_id,Devices.temperature,Devices.location,Devices.time).filter(and_(Devices.time > str(currnet_timestamp)), Devices.time <= str(datetime_to_timestamp(dt_max_hour_Date,str(max_hour)+':00:00'))).all()
             if(data):
                 aggregate_function(data)
-                continue
+            continue
+        #in below case it covers the first time that data will insert into mysqldb table (device_results)
         else:
             data = session_psql.query(Devices.device_id,Devices.temperature,Devices.location,Devices.time).filter(and_(Devices.time <= str(datetime_to_timestamp(dt_max_hour_Date,str(max_hour)+':00:00')))).all()
-            aggregate_function(data)
+            if(data):
+                aggregate_function(data)
             continue
-    else :
-        sleep(3600)
-        continue
